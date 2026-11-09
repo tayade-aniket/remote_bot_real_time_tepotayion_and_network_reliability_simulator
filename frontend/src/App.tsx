@@ -55,6 +55,13 @@ export const App: React.FC = () => {
   const sequenceRef = useRef<number>(1);
   const reconnectTimeoutRef = useRef<any>(null);
 
+  // Keep latest operator and metrics in refs to avoid reconnect loops when state updates
+  const operatorRef = useRef(operator);
+  operatorRef.current = operator;
+
+  const metricsRef = useRef(metrics);
+  metricsRef.current = metrics;
+
   // Log append helper
   const addLog = useCallback(
     (direction: 'UP' | 'DOWN', type: string, details: string, status?: string) => {
@@ -98,8 +105,23 @@ export const App: React.FC = () => {
 
   // 2. WebSocket Connection Lifecycle
   const connectWebSocket = useCallback(() => {
+    // Clear any pending reconnect timers
+    if (reconnectTimeoutRef.current) {
+      clearTimeout(reconnectTimeoutRef.current);
+      reconnectTimeoutRef.current = null;
+    }
+
+    // Cleanly detach event handlers from previous socket to prevent spurious error/close events
     if (wsRef.current) {
-      wsRef.current.close();
+      const prevWs = wsRef.current;
+      prevWs.onopen = null;
+      prevWs.onmessage = null;
+      prevWs.onerror = null;
+      prevWs.onclose = null;
+      if (prevWs.readyState === WebSocket.OPEN || prevWs.readyState === WebSocket.CONNECTING) {
+        prevWs.close();
+      }
+      wsRef.current = null;
     }
 
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -108,10 +130,18 @@ export const App: React.FC = () => {
     setConnectionStatus('CONNECTING');
     addLog('UP', 'WS_CONNECT', `Connecting to ${selectedRobotId}...`);
 
-    const ws = new WebSocket(wsUrl);
-    wsRef.current = ws;
+    let ws: WebSocket;
+    try {
+      ws = new WebSocket(wsUrl);
+      wsRef.current = ws;
+    } catch (e) {
+      console.warn('Failed to construct WebSocket:', e);
+      return;
+    }
 
     ws.onopen = () => {
+      if (wsRef.current !== ws) return;
+
       setConnectionStatus('CONNECTED');
       setReconnectAttempts(0);
       addLog('DOWN', 'WS_OPEN', `WebSocket connected to ${selectedRobotId}`);
@@ -121,12 +151,13 @@ export const App: React.FC = () => {
         JSON.stringify({
           type: 'lease_request',
           robot_id: selectedRobotId,
-          operator_id: operator,
+          operator_id: operatorRef.current,
         })
       );
     };
 
     ws.onmessage = (event) => {
+      if (wsRef.current !== ws) return;
       try {
         const data = JSON.parse(event.data);
 
@@ -141,7 +172,7 @@ export const App: React.FC = () => {
               time: new Date().toLocaleTimeString(),
               speed: telem.linear_velocity,
               angular: telem.angular_velocity,
-              rtt: metrics ? metrics.avg_rtt_ms : 0,
+              rtt: metricsRef.current ? metricsRef.current.avg_rtt_ms : 0,
               battery: telem.battery_level,
             },
           ]);
@@ -163,6 +194,7 @@ export const App: React.FC = () => {
     };
 
     ws.onclose = () => {
+      if (wsRef.current !== ws) return;
       setConnectionStatus('DISCONNECTED');
       addLog('DOWN', 'WS_CLOSE', `Disconnected from ${selectedRobotId}. Reconnecting in 2s...`);
 
@@ -174,15 +206,29 @@ export const App: React.FC = () => {
     };
 
     ws.onerror = (err) => {
-      console.error('WebSocket error:', err);
+      if (wsRef.current !== ws) return;
+      console.warn('WebSocket connection event:', err);
     };
-  }, [selectedRobotId, operator, addLog, metrics]);
+  }, [selectedRobotId, addLog]);
 
   useEffect(() => {
     connectWebSocket();
     return () => {
-      if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
-      if (wsRef.current) wsRef.current.close();
+      if (reconnectTimeoutRef.current) {
+        clearTimeout(reconnectTimeoutRef.current);
+        reconnectTimeoutRef.current = null;
+      }
+      if (wsRef.current) {
+        const activeWs = wsRef.current;
+        activeWs.onopen = null;
+        activeWs.onmessage = null;
+        activeWs.onerror = null;
+        activeWs.onclose = null;
+        if (activeWs.readyState === WebSocket.OPEN || activeWs.readyState === WebSocket.CONNECTING) {
+          activeWs.close();
+        }
+        wsRef.current = null;
+      }
     };
   }, [connectWebSocket]);
 
@@ -368,7 +414,7 @@ export const App: React.FC = () => {
   const currentRobot = robots.find((r) => r.id === selectedRobotId);
 
   return (
-    <div className="min-h-screen bg-slate-950 flex flex-col font-sans">
+    <div className="min-h-screen bg-slate-100/70 flex flex-col font-sans text-slate-800">
       {/* Top Navigation & Fleet Bar */}
       <Header
         robots={robots}

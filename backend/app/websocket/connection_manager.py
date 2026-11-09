@@ -67,10 +67,11 @@ class WebSocketConnectionManager:
         try:
             await websocket.send_text(json.dumps(data))
         except Exception:
+            # Client socket has disconnected or closed
             pass
 
     async def broadcast_to_robot(self, robot_id: str, data: Dict[str, Any]):
-        """Broadcasts message to all clients watching this robot."""
+        """Broadcasts message safely to all clients watching this robot."""
         if robot_id not in self.active_connections:
             return
         payload = json.dumps(data)
@@ -83,9 +84,20 @@ class WebSocketConnectionManager:
         for ws in stale_sockets:
             self.disconnect(ws, robot_id)
 
+    async def _send_delayed_broadcast(self, robot_id: str, payload: Dict[str, Any], delay_sec: float):
+        """Asynchronously transmits an in-flight packet after simulated network delay."""
+        try:
+            if delay_sec > 0.0:
+                await asyncio.sleep(delay_sec)
+            await self.broadcast_to_robot(robot_id, payload)
+        except Exception as e:
+            logger.debug(f"Delayed broadcast delivery interrupted for {robot_id}: {e}")
+
     async def _telemetry_stream_loop(self, robot_id: str):
         """
-        Periodically transmits telemetry packets subjected to network impairment.
+        Periodically transmits telemetry packets at fixed 20 Hz frequency.
+        Simulated network delays are dispatched in concurrent in-flight tasks
+        to avoid choking the physics/telemetry clock rate.
         """
         interval = 1.0 / settings.TELEMETRY_HZ
         engine = fleet_manager.get_robot(robot_id)
@@ -106,7 +118,7 @@ class WebSocketConnectionManager:
                     avg_rtt = metrics.get_metrics().avg_rtt_ms if metrics else 0.0
                     recording_service.record_telemetry(active_session_id, telemetry, rtt_ms=avg_rtt)
 
-                # Send via network impairment simulator
+                # Process through network impairment simulator
                 if net_sim:
                     if net_sim.should_drop_packet():
                         if metrics:
@@ -114,14 +126,18 @@ class WebSocketConnectionManager:
                         continue
 
                     delay_sec = net_sim.calculate_delay_sec()
+                    if metrics:
+                        metrics.record_telemetry_sent()
+
                     if delay_sec > 0.0:
-                        await asyncio.sleep(delay_sec)
-
-                if metrics:
-                    metrics.record_telemetry_sent()
-
-                # Broadcast to connected clients
-                await self.broadcast_to_robot(robot_id, telemetry)
+                        # Dispatch non-blocking in-flight packet task
+                        asyncio.create_task(self._send_delayed_broadcast(robot_id, telemetry, delay_sec))
+                    else:
+                        await self.broadcast_to_robot(robot_id, telemetry)
+                else:
+                    if metrics:
+                        metrics.record_telemetry_sent()
+                    await self.broadcast_to_robot(robot_id, telemetry)
 
             except asyncio.CancelledError:
                 break

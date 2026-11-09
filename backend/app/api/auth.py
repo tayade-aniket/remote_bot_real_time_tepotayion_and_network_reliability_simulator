@@ -22,16 +22,16 @@ def get_current_user(token: Optional[str] = Depends(oauth2_scheme)) -> dict:
 
 @router.post("/login", response_model=Token)
 def login(creds: LoginRequest, db: Session = Depends(get_db)):
-    # Standard credentials check or create demo credentials if db empty
+    # Standard credentials check or auto-provision demo users for development
     user = db.query(User).filter(User.username == creds.username).first()
     if not user:
-        # Auto-provision demo operator for painless local development/testing
-        if creds.username in ["admin", "operator", "operator_alice"]:
+        # Auto-provision demo operator/admin/viewer for painless development
+        if creds.username in ["admin", "operator", "operator_alice", "operator_bob", "viewer_guest"] or creds.username.startswith("operator_"):
             user = User(
                 id=f"usr_{uuid.uuid4().hex[:8]}",
                 username=creds.username,
                 hashed_password=hash_password(creds.password),
-                role="admin" if creds.username == "admin" else "operator"
+                role="admin" if "admin" in creds.username else "operator"
             )
             db.add(user)
             db.commit()

@@ -109,19 +109,29 @@ class FleetManager:
         logger.info("Stopped physics simulation loop")
 
     async def _physics_loop(self):
+        """
+        Continuous fixed-timestep differential-drive physics integration loop.
+        Wrapped in defensive try/catch to maintain system uptime even if a numerical anomaly occurs.
+        """
         dt = 1.0 / settings.SIMULATION_HZ
         while self._running:
-            start_time = time.monotonic()
-            
-            # Step every robot in the fleet
-            for engine in list(self.robots.values()):
-                try:
-                    engine.step(dt)
-                except Exception as e:
-                    logger.error(f"Error stepping robot {engine.robot_id}: {e}", exc_info=True)
+            try:
+                start_time = time.monotonic()
+                
+                # Step every robot in the fleet
+                for engine in list(self.robots.values()):
+                    try:
+                        engine.step(dt)
+                    except Exception as e:
+                        logger.error(f"Error stepping robot {engine.robot_id}: {e}", exc_info=True)
 
-            elapsed = time.monotonic() - start_time
-            sleep_time = max(0.001, dt - elapsed)
-            await asyncio.sleep(sleep_time)
+                elapsed = time.monotonic() - start_time
+                sleep_time = max(0.001, dt - elapsed)
+                await asyncio.sleep(sleep_time)
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Unhandled exception in fleet physics loop: {e}", exc_info=True)
+                await asyncio.sleep(dt)
 
 fleet_manager = FleetManager()

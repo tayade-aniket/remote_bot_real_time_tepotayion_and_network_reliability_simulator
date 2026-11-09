@@ -153,54 +153,57 @@ async def websocket_robot_endpoint(
                     metrics.record_command_sent()
 
                 async def deliver_command(cmd: Dict[str, Any]):
-                    cmd_id = cmd.get("command_id", "cmd")
-                    seq = cmd.get("sequence", 0)
-                    client_ts = cmd.get("timestamp", time.time())
-                    linear_v = float(cmd.get("linear_velocity", 0.0))
-                    angular_w = float(cmd.get("angular_velocity", 0.0))
-                    
-                    # Apply to physics engine
-                    accepted, status = engine.apply_movement_command(
-                        command_id=cmd_id,
-                        sequence=seq,
-                        operator_id=operator_id,
-                        target_v=linear_v,
-                        target_w=angular_w,
-                        client_timestamp=client_ts
-                    )
+                    try:
+                        cmd_id = cmd.get("command_id", "cmd")
+                        seq = cmd.get("sequence", 0)
+                        client_ts = cmd.get("timestamp", time.time())
+                        linear_v = float(cmd.get("linear_velocity", 0.0))
+                        angular_w = float(cmd.get("angular_velocity", 0.0))
+                        
+                        # Apply to physics engine
+                        accepted, status = engine.apply_movement_command(
+                            command_id=cmd_id,
+                            sequence=seq,
+                            operator_id=operator_id,
+                            target_v=linear_v,
+                            target_w=angular_w,
+                            client_timestamp=client_ts
+                        )
 
-                    now = time.time()
-                    rtt_ms = round((now - client_ts) * 1000.0, 2)
-                    
-                    if metrics:
-                        metrics.record_command_ack(rtt_ms)
+                        now = time.time()
+                        rtt_ms = round((now - client_ts) * 1000.0, 2)
+                        
+                        if metrics:
+                            metrics.record_command_ack(rtt_ms)
 
-                    # Record to session buffer
-                    active_session_id = recording_service.get_active_session_for_robot(robot_id)
-                    if active_session_id:
-                        recording_service.record_command(active_session_id, cmd, status=status)
+                        # Record to session buffer
+                        active_session_id = recording_service.get_active_session_for_robot(robot_id)
+                        if active_session_id:
+                            recording_service.record_command(active_session_id, cmd, status=status)
 
-                    ack = {
-                        "type": "command_ack",
-                        "robot_id": robot_id,
-                        "command_id": cmd_id,
-                        "sequence": seq,
-                        "status": status,
-                        "rtt_ms": rtt_ms,
-                        "server_timestamp": now
-                    }
+                        ack = {
+                            "type": "command_ack",
+                            "robot_id": robot_id,
+                            "command_id": cmd_id,
+                            "sequence": seq,
+                            "status": status,
+                            "rtt_ms": rtt_ms,
+                            "server_timestamp": now
+                        }
 
-                    # Send ACK through network simulation downlink
-                    if net_sim:
-                        if net_sim.should_drop_packet():
-                            if metrics:
-                                metrics.record_command_dropped()
-                            return
-                        delay = net_sim.calculate_delay_sec()
-                        if delay > 0:
-                            await asyncio.sleep(delay)
+                        # Send ACK through network simulation downlink
+                        if net_sim:
+                            if net_sim.should_drop_packet():
+                                if metrics:
+                                    metrics.record_command_dropped()
+                                return
+                            delay = net_sim.calculate_delay_sec()
+                            if delay > 0:
+                                await asyncio.sleep(delay)
 
-                    await ws_manager.send_personal_json(websocket, ack)
+                        await ws_manager.send_personal_json(websocket, ack)
+                    except Exception as err:
+                        logger.debug(f"Command processing task ended: {err}")
 
                 async def drop_command(cmd: Dict[str, Any]):
                     if metrics:
